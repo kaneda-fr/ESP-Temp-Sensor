@@ -1,2 +1,2 @@
 # ESP-Temp-Sensor
-Temperature sensor based on ESP8266
+Temperature and water flow sensor based on ESP8266
