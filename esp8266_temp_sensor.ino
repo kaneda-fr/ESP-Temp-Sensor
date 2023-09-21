@@ -15,12 +15,15 @@
 #include <Ticker.h>
 #include <AsyncMqttClient.h>
 #include <ArduinoJson.h>
+#include "arduino_secrets.h"
 
-#define WIFI_SSID "<SSID>>"
-#define WIFI_PASSWORD "<password>"
+
+#define LED D0 //Led in NodeMCU at pin GPIO16 (D0) 
+#define LED_INTERVAL_OK 5000
+#define LED_INTERVAL_ERROR 500
 
 // Raspberri Pi Mosquitto MQTT Broker
-#define MQTT_HOST IPAddress(192, 168, 1, 1)
+#define MQTT_HOST IPAddress(192, 168, 100, 60)
 // For a cloud MQTT broker, type the domain name
 //#define MQTT_HOST "example.com"
 #define MQTT_PORT 1883
@@ -46,6 +49,9 @@ Ticker wifiReconnectTimer;
 
 unsigned long previousMillis = 0;   // Stores last time temperature was published
 const long interval = 10000;        // Interval at which to publish sensor readings
+
+unsigned long  previousLEDMillis = 0;   // Stores last time LED was Blinked
+boolean ledState = true;
 
 void connectToWifi() {
   Serial.println("Connecting to Wi-Fi...");
@@ -103,8 +109,13 @@ void onMqttPublish(uint16_t packetId) {
 }
 
 void setup() {
+
+  pinMode(LED, OUTPUT); //LED pin as output
+  digitalWrite(LED, LOW); //turn the led on
+
   sensors.begin();
   Serial.begin(115200);
+  pinMode(LED, OUTPUT); //LED pin as output
   Serial.println();
   
   wifiConnectHandler = WiFi.onStationModeGotIP(onWifiConnect);
@@ -126,6 +137,9 @@ void setup() {
   Serial.print(deviceCount, DEC);
   Serial.println(" devices.");
   Serial.println("");
+  
+  if (deviceCount > 0)
+    digitalWrite(LED, HIGH); //turn the led off
 }
 
 void loop() {
@@ -134,6 +148,14 @@ void loop() {
   // good for about 10 sensors
   StaticJsonDocument<192> payload;
   char output[512];
+
+
+  // Blink LED
+  if (currentMillis - previousLEDMillis >= (sensors.getDeviceCount() == 0 ? LED_INTERVAL_ERROR : LED_INTERVAL_OK)) {
+    previousLEDMillis = currentMillis;
+    digitalWrite(LED_BUILTIN, ledState);
+    ledState = !ledState;
+  }
 
   // Every X number of seconds (interval = 10 seconds) 
   // it publishes a new MQTT message
