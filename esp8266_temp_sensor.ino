@@ -18,7 +18,8 @@
 #include "arduino_secrets.h"
 
 
-#define LED D0 //Led in NodeMCU at pin GPIO16 (D0) 
+#define LED BUILTIN_LED //Led in NodeMCU at pin GPIO16 (D0) 
+#define LED_RX D4
 #define LED_INTERVAL_OK 5000
 #define LED_INTERVAL_ERROR 500
 
@@ -31,8 +32,13 @@
 // Temperature MQTT Topics
 #define MQTT_PUB_TEMP "esp/temperature"
 
+
+// GPIO where the Water flow meter is connected to
+#define FLOW_SENSOR  D2
 // GPIO where the DS18B20 is connected to
-const int oneWireBus = 4;          
+#define TEMP_SENSOR  D1
+
+const int oneWireBus = TEMP_SENSOR;          
 // Setup a oneWire instance to communicate with any OneWire devices
 OneWire oneWire(oneWireBus);
 // Pass our oneWire reference to Dallas Temperature sensor 
@@ -50,8 +56,19 @@ Ticker wifiReconnectTimer;
 unsigned long previousMillis = 0;   // Stores last time temperature was published
 const long interval = 10000;        // Interval at which to publish sensor readings
 
+// Led blink variables
 unsigned long  previousLEDMillis = 0;   // Stores last time LED was Blinked
 boolean ledState = true;
+
+// Flow meter variables
+float calibrationFactor = 4; // Pulse per litre
+volatile byte pulseCount;
+byte pulse1Sec = 0;
+float flowRate;
+unsigned long flowMilliLitres;
+unsigned int totalMilliLitres;
+float flowLitres;
+float totalLitres;
 
 void connectToWifi() {
   Serial.println("Connecting to Wi-Fi...");
@@ -108,14 +125,23 @@ void onMqttPublish(uint16_t packetId) {
   Serial.println(packetId);
 }
 
+// Intrupt for counting water flow meter pulse
+void IRAM_ATTR pulseCounter()
+{
+  pulseCount++;
+  digitalWrite(LED_RX, LOW); 
+  //Serial.println(pulseCount);
+}
+
 void setup() {
 
   pinMode(LED, OUTPUT); //LED pin as output
+  pinMode(LED_RX, OUTPUT); //LED pin as output
   digitalWrite(LED, LOW); //turn the led on
+  digitalWrite(LED_RX, LOW); 
 
   sensors.begin();
   Serial.begin(115200);
-  pinMode(LED, OUTPUT); //LED pin as output
   Serial.println();
   
   wifiConnectHandler = WiFi.onStationModeGotIP(onWifiConnect);
@@ -140,32 +166,72 @@ void setup() {
   
   if (deviceCount > 0)
     digitalWrite(LED, HIGH); //turn the led off
+
+  // Setup flow meter
+  pulseCount = 0;
+  flowRate = 0.0;
+  flowMilliLitres = 0;
+  totalMilliLitres = 0;
+
+  // enable PULLUP on flow sensor interupt pin
+  pinMode(FLOW_SENSOR, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR), pulseCounter, FALLING);
+  digitalWrite(LED_RX, HIGH); //turn the led off
 }
 
 void loop() {
   unsigned long currentMillis = millis();
+  unsigned long calc_interval = 0;
   int count=0;
   // good for about 10 sensors
   StaticJsonDocument<192> payload;
   char output[512];
 
-
-  // Blink LED
-  if (currentMillis - previousLEDMillis >= (sensors.getDeviceCount() == 0 ? LED_INTERVAL_ERROR : LED_INTERVAL_OK)) {
-    previousLEDMillis = currentMillis;
-    digitalWrite(LED_BUILTIN, ledState);
-    ledState = !ledState;
-  }
+  // Turn  LED Off
+  digitalWrite(LED_RX, HIGH); 
 
   // Every X number of seconds (interval = 10 seconds) 
   // it publishes a new MQTT message
   if (currentMillis - previousMillis >= interval) {
+    payload.clear();
+
+    calc_interval = currentMillis - previousMillis;
+
+    // Flow calculation
+    payload["flow"]["pulse"] = pulseCount;
+    pulse1Sec = pulseCount;
+    pulseCount = 0;
+
+    flowRate = ((1000.0 / calc_interval) * pulse1Sec) / calibrationFactor;
+
+
+    // Divide the flow rate in litres/minute by 60 to determine how many litres have
+    // passed through the sensor in this 1 second interval, then multiply by 1000 to
+    // convert to millilitres.
+    flowMilliLitres = (flowRate / 60) * calc_interval;
+    flowLitres = (flowRate / 60) * calc_interval / 1000;
+ 
+    // Add the millilitres passed in this second to the cumulative total
+    totalMilliLitres += flowMilliLitres;
+    totalLitres += flowLitres;
+
+    payload["flow"]["rate"] = flowRate;
+    payload["flow"]["volume"] = flowLitres;
+    
+    // Print the flow rate for this second in litres / minute
+    Serial.print("Flow rate: ");
+    Serial.print(float(flowRate));  // Print the integer part of the variable
+    Serial.print("L/min");
+    Serial.print("\t");  
+
     // Save the last time a new reading was published
     previousMillis = currentMillis;
+
     // New temperature readings
     sensors.requestTemperatures(); 
 
-    payload.clear();
+
+    //payload["ds18b20"]=[];
     for (int deviceIndex =0; deviceIndex <sensors.getDeviceCount(); deviceIndex++ ){
         DeviceAddress deviceAddress;
         String dev_addr="";
@@ -192,7 +258,7 @@ void loop() {
     
       // Publish an MQTT message on topic esp/temperature/sensorID
       //pub.concat(MQTT_PUB_TEMP);
-      payload[dev_addr] = temp;
+      payload["ds18b20"][dev_addr] = temp;
     }
   
     serializeJson(payload, output, 512);
@@ -200,5 +266,12 @@ void loop() {
     Serial.printf("Publishing on topic %s at QoS 1, packetId: %i ", MQTT_PUB_TEMP, packetIdPub1);
     Serial.printf("Message: %s \n", output);
 
+
+    // Blink LED
+    if (currentMillis - previousLEDMillis >= (sensors.getDeviceCount() == 0 ? LED_INTERVAL_ERROR : LED_INTERVAL_OK)) {
+      previousLEDMillis = currentMillis;
+      digitalWrite(LED_BUILTIN, ledState);
+      ledState = !ledState;
+    }
   }
 }
